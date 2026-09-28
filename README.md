@@ -1,17 +1,28 @@
-# 🥗 MacroSnap — AI Nutrition Buddy
+# 🌟 MacroSnap — Universal AI Vision Suite
 
-MacroSnap is a modern Streamlit chat application powered by **Google Gemini** (Vision + Chat) and **Twilio** (WhatsApp). Enter your name and contact once, snap a photo or describe your meal, and get instant calorie and macro estimates. When you're done, hit **"Send to WhatsApp"** to get a complete daily digest delivered directly to your phone.
+MacroSnap is a versatile Streamlit application powered by **Google Gemini** (Vision + Chat) and **Multi-Channel Dispatch** (**WhatsApp**, **Gmail**, and **Telegram**). 
+
+Built for the **CCBP AI Vision Chatbot Workshop**, this project unifies all 4 flagship project ideas into a single seamless suite with zero model training, OpenCV, or MediaPipe overhead.
 
 ---
 
-## ✨ Features
+## 🎛️ 4 Interactive AI Vision Modes
 
-- **📸 Instant Food Vision**: Snap a photo using your camera or upload an image (`.jpg`, `.jpeg`, `.png`) to decode meals automatically.
-- **💬 Conversational Memory**: Chat naturally with MacroSnap. Ask follow-up questions like *"How much protein was in that?"* or *"What healthy side can I add?"*.
-- **🎯 Strictly Scoped Nutrition Persona**: MacroSnap's AI personality stays laser-focused on meals, nutrition, calories, and fitness.
-- **📲 Direct WhatsApp Integration**: Rereads the entire conversation and compiles a formatted, emoji-friendly digest sent via Twilio's WhatsApp API.
-- **⚡ Multi-Channel Support**: Seamlessly supports **WhatsApp** (Twilio), **Email** (Gmail SMTP), or **Telegram Bot**.
-- **🎨 Modern, Polished UI**: Designed with clean typography, responsive layout, quick meal presets, and live connection status indicators.
+| Mode | Icon | Description | Core Action |
+| :--- | :---: | :--- | :--- |
+| **MacroSnap** | 🥗 | Snap a meal or food photo to get instant estimated calories and macros (protein, carbs, fat). | Sends complete daily nutrition & macro recap. |
+| **Snap & Study** | 📚 | Photograph a diagram, homework problem, textbook page, or handwritten notes for plain-language explanations. | Sends high-yield revision sheet & formulas. |
+| **Receipt Splitter** | 🧾 | Photograph a receipt, check, or invoice to itemize costs, compute tax/tip, and split shares fairly. | Sends itemized financial breakdown & split balances. |
+| **Deadline Tracker** | ⏰ | Photograph a syllabus, timetable, or assignment notice to extract upcoming dates and tests. | Sends prioritized chronological deadline checklist. |
+
+---
+
+## 📬 3 Integrated Delivery Channels (Action Tools)
+
+- **Option A: WhatsApp (via Twilio)**: Sends formatted digests using Twilio's WhatsApp Content Template API or sandbox messaging.
+- **Option B: Gmail (via SMTP - Completely Free)**: Sends email summaries via Python's built-in `smtplib` using Google App Passwords.
+- **Option C: Telegram Bot (Completely Free)**: Sends instant messages to any Telegram chat via the Telegram Bot API.
+- **In-App Copy / Preview**: Instant copyable card displayed directly in the app so you are never blocked during local testing or evaluation.
 
 ---
 
@@ -19,13 +30,13 @@ MacroSnap is a modern Streamlit chat application powered by **Google Gemini** (V
 
 ```
 MacroSnap/
-├── app.py                        # Main Streamlit application
-├── prompts.py                    # AI persona, system prompts, and message templates
+├── app.py                        # Complete Streamlit multi-mode application
+├── prompts.py                    # AI personas, system prompts, and templates for all 4 modes
 ├── requirements.txt              # Project dependencies
-├── .gitignore                    # Keeps secrets, venvs, and cache out of Git
+├── .gitignore                    # Keeps secrets.toml, venvs, and cache out of Git
 ├── README.md                     # Documentation and setup guide
 └── .streamlit/
-    └── secrets.toml.example      # Template for environment secrets
+    └── secrets.toml.example      # Secrets template (never committed)
 ```
 
 ---
@@ -35,7 +46,9 @@ MacroSnap/
 ### 1. Prerequisites
 - **Python 3.9+** installed
 - A free **[Google AI Studio](https://aistudio.google.com)** account (for your Gemini API key)
-- A free **[Twilio](https://www.twilio.com/try-twilio)** account (for WhatsApp Sandbox)
+- *(Optional)* A free **[Twilio](https://www.twilio.com/try-twilio)** account for WhatsApp Sandbox
+- *(Optional)* A Gmail address with an [App Password](https://myaccount.google.com/apppasswords) for Email
+- *(Optional)* A Telegram bot token from [@BotFather](https://t.me/BotFather)
 
 ### 2. Clone and Setup Environment
 
@@ -64,68 +77,55 @@ pip install -r requirements.txt
 Create your local secrets configuration:
 
 ```bash
-# Copy template to the active secrets file
 cp .streamlit/secrets.toml.example .streamlit/secrets.toml
 ```
 
-Open `.streamlit/secrets.toml` and fill in your keys:
+Open `.streamlit/secrets.toml` and configure your credentials:
 
 ```toml
-# Google AI Studio API Key (https://aistudio.google.com)
+# 1. Google Gemini (Required)
 GEMINI_API_KEY = "AIzaSy..."
 
-# (Optional) Model name (defaults to gemini-2.5-flash)
-# GEMINI_MODEL = "gemini-2.5-flash"
-
-# Twilio Credentials (https://console.twilio.com)
+# 2. WhatsApp via Twilio (Option A)
 TWILIO_ACCOUNT_SID = "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 TWILIO_AUTH_TOKEN = "your_auth_token_here"
 TWILIO_WHATSAPP_FROM = "whatsapp:+14155238886"
 TWILIO_CONTENT_SID = "HXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
-# (Optional) Option B: Gmail SMTP
+# 3. Gmail SMTP (Option B - Free)
 # GMAIL_ADDRESS = "your-email@gmail.com"
 # GMAIL_APP_PASSWORD = "your-16-char-app-password"
 
-# (Optional) Option C: Telegram Bot
-# TELEGRAM_BOT_TOKEN = "your-bot-token"
+# 4. Telegram Bot (Option C - Free)
+# TELEGRAM_BOT_TOKEN = "123456789:ABCdefGhIJKlmNoPQRstuVWXyz"
 ```
 
-> **Important**: Never commit `.streamlit/secrets.toml` to Git. It is already added to `.gitignore`.
-
----
-
-## 📲 Setting up Twilio WhatsApp Sandbox
-
-1. Go to your **Twilio Console** → **Messaging** → **Try it out** → **Send a WhatsApp message**.
-2. From your personal phone, send the sandbox join keyword (e.g., `join happy-tiger`) to `+1 415 523 8886`.
-3. In **Twilio Console** → **Messaging** → **Content Template Builder**, create a Text template:
-   - Template Body: `Hi {{1}}, here's your MacroSnap summary:\n\n{{2}}`
-   - Copy the generated **Content SID** (starts with `HX...`) into `TWILIO_CONTENT_SID`.
+> **Security Note**: `.streamlit/secrets.toml` is included in `.gitignore` and is never committed to GitHub.
 
 ---
 
 ## ▶️ Running the App
 
-```bash
-streamlit run app.py
+```powershell
+# Using the virtual environment directly:
+.\venv\Scripts\streamlit.exe run app.py
 ```
 
-The app will launch at `http://localhost:8501`.
+The app opens at `http://localhost:8501`.
 
-1. Enter your name and WhatsApp number (with country code, e.g., `+91XXXXXXXXXX`).
-2. Say hi or click a quick sample meal.
-3. Attach a picture of your breakfast, lunch, or dinner.
-4. When you're ready, hit **📤 Send to WhatsApp**!
+1. Choose your active mode from the sidebar (**MacroSnap 🥗**, **Snap & Study 📚**, **Receipt Splitter 🧾**, or **Deadline Tracker ⏰**).
+2. Enter your name and contact destination in the onboarding form.
+3. Test with text questions, quick sample presets, or upload a photo.
+4. Click **📤 Send to [Channel]** to deliver the AI-generated digest!
 
 ---
 
 ## ☁️ Deploying to Streamlit Community Cloud
 
 1. Push your repository to GitHub (ensure `.streamlit/secrets.toml` is ignored).
-2. Visit **[share.streamlit.io](https://share.streamlit.io)** and connect your GitHub account.
-3. Select your repository, branch, and specify `app.py` as the entry file.
-4. Under **App Settings** → **Secrets**, copy the contents of your local `secrets.toml` and save.
+2. Visit **[share.streamlit.io](https://share.streamlit.io)** and log in with GitHub.
+3. Click **New app**, select your repository, branch, and set `app.py` as the entrypoint.
+4. Under **App Settings** → **Secrets**, paste your secrets from `secrets.toml`.
 5. Click **Deploy**!
 
 ---

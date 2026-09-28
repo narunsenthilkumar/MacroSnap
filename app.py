@@ -1,7 +1,15 @@
 """
-app.py - MacroSnap: AI Nutrition Buddy
-A Streamlit chat application powered by Google Gemini (Vision + Chat) and Twilio (WhatsApp),
-with optional Email (Gmail SMTP) and Telegram support.
+app.py - MacroSnap Universal AI Vision Suite
+Supports all 4 project modes from the workshop:
+  1. MacroSnap 🥗 (Nutrition & Macro Buddy)
+  2. Snap & Study 📚 (Homework & Concept Explainer)
+  3. Receipt Splitter 🧾 (Bill & Expense Tracker)
+  4. Deadline Tracker ⏰ (Syllabus & Schedule Digest)
+
+Multi-channel action tools:
+  - Option A: WhatsApp (via Twilio)
+  - Option B: Gmail (SMTP SSL - completely free)
+  - Option C: Telegram Bot (Telegram API - completely free)
 """
 
 import html
@@ -9,7 +17,7 @@ import json
 import os
 import smtplib
 from email.mime.text import MIMEText
-from typing import Optional
+from typing import Optional, Tuple
 
 import requests
 import streamlit as st
@@ -17,38 +25,42 @@ from google import genai
 from google.genai import types
 from twilio.rest import Client as TwilioClient
 
-from prompts import SUMMARY_REQUEST_PROMPT, SYSTEM_PROMPT, WELCOME_MESSAGE_TEMPLATE
+from prompts import (
+    MODES,
+    MACRO_SYSTEM_PROMPT,
+    MACRO_WELCOME_TEMPLATE,
+    MACRO_SUMMARY_PROMPT,
+)
 
 # --- Page Configuration ---
 st.set_page_config(
-    page_title="MacroSnap - AI Nutrition Buddy",
+    page_title="MacroSnap - Universal AI Vision Suite",
     page_icon="🥗",
     layout="centered",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
 # Initialize session state keys safely
 if "messages" not in st.session_state:
     st.session_state.messages = []
-
+if "current_mode" not in st.session_state:
+    st.session_state.current_mode = "MacroSnap 🥗"
 
 # --- Custom Styling for Premium Look & Feel ---
 st.markdown(
     """
     <style>
-    /* Google Fonts */
     @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
 
     html, body, [class*="css"] {
         font-family: 'Plus Jakarta Sans', sans-serif;
     }
 
-    /* Header styling */
     .app-header {
         display: flex;
         align-items: center;
         gap: 12px;
-        margin-bottom: 4px;
+        margin-bottom: 2px;
     }
     .app-title {
         font-size: 2.2rem;
@@ -62,20 +74,10 @@ st.markdown(
     .app-tagline {
         color: #64748b;
         font-size: 0.95rem;
-        margin-top: -6px;
-        margin-bottom: 20px;
+        margin-top: -4px;
+        margin-bottom: 18px;
     }
 
-    /* Onboarding Card */
-    .onboarding-card {
-        background: rgba(16, 185, 129, 0.04);
-        border: 1px solid rgba(16, 185, 129, 0.2);
-        border-radius: 16px;
-        padding: 24px;
-        margin-bottom: 24px;
-    }
-
-    /* User Profile Pill */
     .user-pill {
         display: inline-flex;
         align-items: center;
@@ -96,27 +98,22 @@ st.markdown(
         background-color: #10b981;
     }
 
-    /* Quick Prompt Pills */
-    .quick-pill {
-        display: inline-block;
-        background: #f8fafc;
-        border: 1px solid #cbd5e1;
-        border-radius: 20px;
-        padding: 4px 12px;
-        font-size: 0.8rem;
-        color: #475569;
-        margin-right: 6px;
-        margin-bottom: 6px;
-        cursor: pointer;
-        transition: all 0.2s ease;
-    }
-    .quick-pill:hover {
+    .mode-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
         background: #ecfdf5;
-        border-color: #10b981;
-        color: #047857;
+        border: 1px solid #a7f3d0;
+        color: #065f46;
+        padding: 4px 10px;
+        border-radius: 6px;
+        font-size: 0.78rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-left: 8px;
     }
 
-    /* Summary Card */
     .summary-card {
         background: #f8fafc;
         border: 1px solid #e2e8f0;
@@ -130,7 +127,6 @@ st.markdown(
         line-height: 1.5;
     }
 
-    /* Button overrides */
     div.stButton > button:first-child {
         border-radius: 12px;
         font-weight: 600;
@@ -158,12 +154,13 @@ def get_secret(key: str, default: str = "") -> str:
 # --- Configuration ---
 MODEL_NAME = get_secret("GEMINI_MODEL", "gemini-2.5-flash")
 GEMINI_API_KEY = get_secret("GEMINI_API_KEY")
+
+# Action Tool Credentials
 TWILIO_ACCOUNT_SID = get_secret("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = get_secret("TWILIO_AUTH_TOKEN")
 TWILIO_WHATSAPP_FROM = get_secret("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
 TWILIO_CONTENT_SID = get_secret("TWILIO_CONTENT_SID")
 
-# Optional alternative action tools
 GMAIL_ADDRESS = get_secret("GMAIL_ADDRESS")
 GMAIL_APP_PASSWORD = get_secret("GMAIL_APP_PASSWORD")
 TELEGRAM_BOT_TOKEN = get_secret("TELEGRAM_BOT_TOKEN")
@@ -193,26 +190,23 @@ def get_twilio_client(account_sid: str, auth_token: str):
 def clean_whatsapp_text(text: str) -> str:
     """Collapses whitespace/newlines and caps length for WhatsApp messaging."""
     if not text:
-        return "No nutrition summary available."
+        return "No summary available."
     cleaned = " ".join(text.split())
     return cleaned[:1500] + "..." if len(cleaned) > 1500 else cleaned
 
 
-def send_whatsapp(to_number: str, user_name: str, summary: str, twilio_client_inst) -> tuple[bool, str]:
+def send_whatsapp(to_number: str, user_name: str, summary: str, twilio_client_inst) -> Tuple[bool, str]:
     """
     Sends WhatsApp summary via Twilio Content API (Template) or direct sandbox message.
-    Expects {{1}} = name, {{2}} = summary for Content Template.
     """
     if not twilio_client_inst or not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
         return False, "Twilio credentials not configured in secrets.toml."
 
-    # Format destination number
     to_formatted = to_number.strip()
     if not to_formatted.startswith("+"):
         to_formatted = f"+{to_formatted}"
     whatsapp_to = f"whatsapp:{to_formatted}"
 
-    # Strategy 1: Content Template API (as required by WhatsApp business rules)
     if TWILIO_CONTENT_SID:
         try:
             content_variables = json.dumps(
@@ -226,7 +220,6 @@ def send_whatsapp(to_number: str, user_name: str, summary: str, twilio_client_in
             )
             return True, message.sid
         except Exception as content_err:
-            # Fall back to direct body messaging if template fails (e.g. sandbox testing)
             try:
                 message = twilio_client_inst.messages.create(
                     from_=TWILIO_WHATSAPP_FROM,
@@ -237,7 +230,6 @@ def send_whatsapp(to_number: str, user_name: str, summary: str, twilio_client_in
             except Exception:
                 return False, str(content_err)
 
-    # Strategy 2: Direct message body (for standard sandbox chat)
     try:
         message = twilio_client_inst.messages.create(
             from_=TWILIO_WHATSAPP_FROM,
@@ -249,53 +241,83 @@ def send_whatsapp(to_number: str, user_name: str, summary: str, twilio_client_in
         return False, str(direct_err)
 
 
-def send_email(to_address: str, user_name: str, summary: str) -> tuple[bool, str]:
+def send_email(to_address: str, user_name: str, summary: str, mode_name: str) -> Tuple[bool, str]:
     """Sends email summary via Gmail SMTP SSL (Option B)."""
-    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
-        return False, "Gmail credentials not configured in secrets.toml (GMAIL_ADDRESS, GMAIL_APP_PASSWORD)."
+    gmail_user = GMAIL_ADDRESS or st.session_state.get("override_gmail_address", "")
+    gmail_pass = GMAIL_APP_PASSWORD or st.session_state.get("override_gmail_password", "")
+
+    if not gmail_user or not gmail_pass:
+        return False, "Gmail credentials not configured. Please add GMAIL_ADDRESS and GMAIL_APP_PASSWORD."
+
     try:
-        body = f"Hi {user_name},\n\nHere is your MacroSnap nutrition summary:\n\n{summary}\n\nStay healthy!\nMacroSnap 🥗"
+        body = (
+            f"Hi {user_name}!\n\n"
+            f"Here is your {mode_name} summary from MacroSnap Suite:\n\n"
+            f"----------------------------------------\n"
+            f"{summary}\n"
+            f"----------------------------------------\n\n"
+            f"Generated with ❤️ by MacroSnap AI Suite."
+        )
         msg = MIMEText(body)
-        msg["Subject"] = f"🥗 MacroSnap Daily Summary for {user_name}"
-        msg["From"] = GMAIL_ADDRESS
+        msg["Subject"] = f"📑 MacroSnap {mode_name} Digest for {user_name}"
+        msg["From"] = gmail_user
         msg["To"] = to_address
 
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+            server.login(gmail_user, gmail_pass)
             server.send_message(msg)
-        return True, "Email sent successfully"
+        return True, "Email sent successfully via Gmail SMTP!"
     except Exception as err:
         return False, str(err)
 
 
-def send_telegram(chat_id: str, user_name: str, summary: str) -> tuple[bool, str]:
+def send_telegram(chat_id: str, user_name: str, summary: str, mode_name: str) -> Tuple[bool, str]:
     """Sends telegram summary via Telegram Bot API (Option C)."""
-    if not TELEGRAM_BOT_TOKEN:
-        return False, "Telegram Bot Token not configured in secrets.toml (TELEGRAM_BOT_TOKEN)."
+    bot_token = TELEGRAM_BOT_TOKEN or st.session_state.get("override_telegram_token", "")
+    if not bot_token:
+        return False, "Telegram Bot Token not configured. Please add TELEGRAM_BOT_TOKEN."
+
     try:
-        text = f"🥗 *MacroSnap Summary for {user_name}*\n\n{summary}"
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        text = f"📑 *MacroSnap {mode_name} Digest for {user_name}*\n\n{summary}"
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         resp = requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
         data = resp.json()
         if data.get("ok"):
-            return True, "Telegram message sent successfully"
+            return True, "Telegram message sent successfully!"
         return False, data.get("description", "Unknown Telegram error")
     except Exception as err:
         return False, str(err)
 
 
-# --- Sidebar / Settings Panel ---
+# --- Sidebar / Mode Selector & Settings ---
 with st.sidebar:
-    st.markdown("### ⚙️ MacroSnap Settings")
+    st.markdown("### 🎛️ Vision Suite Modes")
+    chosen_mode = st.selectbox(
+        "Active Mode",
+        options=list(MODES.keys()),
+        index=list(MODES.keys()).index(st.session_state.current_mode),
+        help="Switch between Nutrition, Study, Receipt Splitter, or Deadline Tracker.",
+    )
 
-    # API Key Configuration helper (in case secrets.toml was not populated yet)
+    # When mode changes, prompt chat reload
+    if chosen_mode != st.session_state.current_mode:
+        st.session_state.current_mode = chosen_mode
+        if "chat" in st.session_state:
+            del st.session_state["chat"]
+        st.session_state.messages = []
+        st.rerun()
+
+    st.markdown("---")
+    st.markdown("### ⚙️ Connection & Keys")
+
+    # API Key Handling
     effective_api_key = GEMINI_API_KEY
     if not effective_api_key:
-        st.warning("⚠️ No `GEMINI_API_KEY` found in `.streamlit/secrets.toml`.")
+        st.warning("⚠️ No `GEMINI_API_KEY` in `secrets.toml`.")
         sidebar_key = st.text_input(
-            "Enter Gemini API Key:",
+            "Gemini API Key:",
             type="password",
-            help="Get your free key from https://aistudio.google.com",
+            help="Free key from https://aistudio.google.com",
             key="user_provided_gemini_key",
         )
         if sidebar_key.strip():
@@ -304,34 +326,41 @@ with st.sidebar:
     elif "override_api_key" in st.session_state:
         effective_api_key = st.session_state["override_api_key"]
 
-    # Model Selector
     model_choice = st.selectbox(
         "Gemini Model",
         options=["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"],
         index=0,
-        help="Default is gemini-2.5-flash as specified in MacroSnap guide.",
     )
 
-    # Status indicators
-    st.markdown("---")
-    st.markdown("#### 🔌 Connection Status")
+    # Status Indicators
+    st.markdown("#### 🔌 Channel Status")
     if effective_api_key:
-        st.caption("🟢 **Gemini AI:** Ready")
+        st.caption("🟢 **Gemini AI:** Connected")
     else:
-        st.caption("🔴 **Gemini AI:** Missing API Key")
+        st.caption("🔴 **Gemini AI:** Key Required")
 
     has_twilio = bool(TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN)
-    if has_twilio:
-        st.caption("🟢 **Twilio WhatsApp:** Configured")
-    else:
-        st.caption("🟡 **Twilio WhatsApp:** Preview / Simulation Mode")
+    st.caption(f"{'🟢' if has_twilio else '🟡'} **WhatsApp (Twilio):** {'Configured' if has_twilio else 'Simulation Mode'}")
 
-    if GMAIL_ADDRESS and GMAIL_APP_PASSWORD:
-        st.caption("🟢 **Gmail SMTP:** Ready")
-    if TELEGRAM_BOT_TOKEN:
-        st.caption("🟢 **Telegram Bot:** Ready")
+    has_gmail = bool(GMAIL_ADDRESS and GMAIL_APP_PASSWORD) or bool(st.session_state.get("override_gmail_address"))
+    st.caption(f"{'🟢' if has_gmail else '⚪'} **Gmail (SMTP):** {'Configured' if has_gmail else 'Optional'}")
 
-    # Reset Conversation Button
+    has_tg = bool(TELEGRAM_BOT_TOKEN) or bool(st.session_state.get("override_telegram_token"))
+    st.caption(f"{'🟢' if has_tg else '⚪'} **Telegram Bot:** {'Configured' if has_tg else 'Optional'}")
+
+    # Optional Action Tool inputs if not in secrets.toml
+    with st.expander("📬 Manual Action Tool Setup"):
+        st.caption("Only needed if not specified in .streamlit/secrets.toml")
+        m_gmail = st.text_input("Gmail Address", value=st.session_state.get("override_gmail_address", ""))
+        m_pass = st.text_input("Gmail App Password (16 chars)", type="password", value=st.session_state.get("override_gmail_password", ""))
+        m_tg = st.text_input("Telegram Bot Token", type="password", value=st.session_state.get("override_telegram_token", ""))
+        if m_gmail:
+            st.session_state["override_gmail_address"] = m_gmail
+        if m_pass:
+            st.session_state["override_gmail_password"] = m_pass
+        if m_tg:
+            st.session_state["override_telegram_token"] = m_tg
+
     st.markdown("---")
     if st.button("🔄 Reset Conversation", use_container_width=True):
         st.session_state.messages = []
@@ -348,6 +377,7 @@ with st.sidebar:
 # Initialize Gemini and Twilio clients
 gemini_client = get_gemini_client(effective_api_key)
 twilio_client = get_twilio_client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+active_mode_info = MODES[st.session_state.current_mode]
 
 
 # --- Chat Interface Helpers ---
@@ -366,25 +396,48 @@ def add_message(role: str, kind: str, content):
     render_message(st.session_state.messages[-1])
 
 
-def ask_gemini(parts) -> str:
-    """Sends parts (text / images) to the existing Gemini chat session with graceful error handling."""
+def ensure_chat_session():
+    """Initializes or restores the Gemini chat session for the active mode."""
     if "chat" not in st.session_state or st.session_state.chat is None:
-        return "Gemini chat session is not initialized. Please ensure your Gemini API key is valid."
+        if not gemini_client:
+            return None
+        active_model = model_choice or MODEL_NAME
+        try:
+            st.session_state.chat = gemini_client.chats.create(
+                model=active_model,
+                config=types.GenerateContentConfig(system_instruction=active_mode_info["system_prompt"]),
+            )
+        except Exception:
+            try:
+                st.session_state.chat = gemini_client.chats.create(
+                    model="gemini-2.0-flash",
+                    config=types.GenerateContentConfig(system_instruction=active_mode_info["system_prompt"]),
+                )
+            except Exception as e:
+                st.error(f"Failed to create chat session: {e}")
+                return None
+    return st.session_state.chat
+
+
+def ask_gemini(parts) -> str:
+    """Sends parts to Gemini chat session with graceful error handling."""
+    chat = ensure_chat_session()
+    if chat is None:
+        return "Gemini chat session could not be established. Please check your Gemini API key in the sidebar."
     try:
-        return st.session_state.chat.send_message(parts).text
+        return chat.send_message(parts).text
     except Exception as error:
         err_msg = str(error)
-        # Handle model not found fallback seamlessly
         if "404" in err_msg or "models/" in err_msg:
             try:
                 fallback_chat = gemini_client.chats.create(
                     model="gemini-2.0-flash",
-                    config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
+                    config=types.GenerateContentConfig(system_instruction=active_mode_info["system_prompt"]),
                 )
                 st.session_state.chat = fallback_chat
                 return fallback_chat.send_message(parts).text
-            except Exception as inner_err:
-                return f"Sorry, something went wrong with the Gemini API: {inner_err}"
+            except Exception as inner:
+                return f"Sorry, something went wrong: {inner}"
         return f"Sorry, something went wrong: {error}"
 
 
@@ -392,8 +445,11 @@ def ask_gemini(parts) -> str:
 # Step 1: Onboarding Screen
 # ==============================================================================
 if "onboarded" not in st.session_state:
-    st.markdown('<div class="app-header"><h1 class="app-title">🥗 MacroSnap</h1></div>', unsafe_allow_html=True)
-    st.markdown('<p class="app-tagline">Snap it. Track it. Text yourself the results.</p>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="app-header"><h1 class="app-title">{active_mode_info["icon"]} {active_mode_info["title"]}</h1><span class="mode-badge">{st.session_state.current_mode}</span></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(f'<p class="app-tagline">{active_mode_info["tagline"]}</p>', unsafe_allow_html=True)
 
     if not effective_api_key:
         st.info(
@@ -402,15 +458,15 @@ if "onboarded" not in st.session_state:
         )
 
     with st.form("onboarding_form"):
-        st.markdown("### Let's get to know you 👋")
+        st.markdown("### Profile & Delivery Setup")
         name = st.text_input("Your Name", placeholder="e.g. Alex")
 
         action_channel = st.radio(
-            "Preferred Delivery Channel",
+            "Preferred Delivery Tool",
             options=["WhatsApp", "Email", "Telegram"],
             index=0,
             horizontal=True,
-            help="Choose where you'd like your daily nutrition summary sent.",
+            help="Select how you would like to receive conversation digests and summaries.",
         )
 
         whatsapp_number = ""
@@ -421,19 +477,19 @@ if "onboarded" not in st.session_state:
             whatsapp_number = st.text_input(
                 "WhatsApp Number (with country code)",
                 placeholder="+91XXXXXXXXXX",
-                help="Make sure this number has joined your Twilio Sandbox (e.g. text 'join your-code' to +14155238886).",
+                help="Make sure this number has joined your Twilio Sandbox (e.g. text 'join <code-name>' to +14155238886).",
             )
         elif action_channel == "Email":
             user_email = st.text_input(
                 "Your Email Address",
                 placeholder="you@example.com",
-                help="Summary will be sent to this email via Gmail SMTP.",
+                help="Summary will be sent directly via Gmail SMTP.",
             )
         elif action_channel == "Telegram":
             telegram_id = st.text_input(
                 "Your Telegram Chat ID",
                 placeholder="123456789",
-                help="Your numeric Telegram chat ID. Message your bot once to start.",
+                help="Send a message to your Telegram bot once, then input your Chat ID here.",
             )
 
         submitted = st.form_submit_button("Let's go 🚀", use_container_width=True)
@@ -448,61 +504,44 @@ if "onboarded" not in st.session_state:
         if not name.strip() or not channel_valid:
             st.warning("Please fill in your name and delivery destination.")
         elif not effective_api_key:
-            st.error("Please enter a valid Gemini API key in the sidebar to begin.")
+            st.error("Please enter a valid Gemini API key in the sidebar to proceed.")
         else:
-            try:
-                # Initialize Gemini chat session with persistent personality
-                st.session_state.name = name.strip()
-                st.session_state.channel = action_channel
-                st.session_state.whatsapp_number = whatsapp_number.strip()
-                st.session_state.email = user_email.strip()
-                st.session_state.telegram_id = telegram_id.strip()
+            st.session_state.name = name.strip()
+            st.session_state.channel = action_channel
+            st.session_state.whatsapp_number = whatsapp_number.strip()
+            st.session_state.email = user_email.strip()
+            st.session_state.telegram_id = telegram_id.strip()
 
-                active_model = model_choice or MODEL_NAME
-                st.session_state.chat = gemini_client.chats.create(
-                    model=active_model,
-                    config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
-                )
-                st.session_state.messages = []
-                st.session_state.onboarded = True
-                st.rerun()
-            except Exception as e:
-                # Try fallback to gemini-2.0-flash if model creation had an issue
-                try:
-                    st.session_state.chat = gemini_client.chats.create(
-                        model="gemini-2.0-flash",
-                        config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
-                    )
-                    st.session_state.messages = []
-                    st.session_state.onboarded = True
-                    st.rerun()
-                except Exception as ex:
-                    st.error(f"Could not connect to Gemini: {ex}")
+            ensure_chat_session()
+            st.session_state.messages = []
+            st.session_state.onboarded = True
+            st.rerun()
     st.stop()
 
 
 # ==============================================================================
-# Step 2: Main Chat & Action Screen
+# Step 2: Main Interface & Action Dispatcher
 # ==============================================================================
+ensure_chat_session()
+
 header_col, button_col = st.columns([5, 3], vertical_alignment="center")
 
 with header_col:
-    st.markdown('<div class="app-header"><h1 class="app-title">🥗 MacroSnap</h1></div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="app-header"><h1 class="app-title">{active_mode_info["icon"]} {active_mode_info["title"]}</h1><span class="mode-badge">{st.session_state.current_mode}</span></div>',
+        unsafe_allow_html=True,
+    )
 
 channel_name = st.session_state.get("channel", "WhatsApp")
 button_label = f"📤 Send to {channel_name}"
 
 with button_col:
-    # Button is disabled until at least one exchange has occurred beyond the welcome message
     send_disabled = len(st.session_state.messages) <= 2
     if st.button(button_label, disabled=send_disabled, use_container_width=True, type="primary"):
-        with st.spinner("Summarizing your day with Gemini..."):
-            summary = ask_gemini([SUMMARY_REQUEST_PROMPT])
+        with st.spinner("Generating clean summary with Gemini..."):
+            summary = ask_gemini([active_mode_info["summary_prompt"]])
 
-        # Store last generated summary in session for inspection/copying
         st.session_state["last_summary"] = summary
-
-        # Send via chosen channel
         success = False
         info = ""
 
@@ -518,20 +557,21 @@ with button_col:
                 st.session_state.email,
                 st.session_state.name,
                 summary,
+                active_mode_info["title"],
             )
         elif channel_name == "Telegram":
             success, info = send_telegram(
                 st.session_state.telegram_id,
                 st.session_state.name,
                 summary,
+                active_mode_info["title"],
             )
 
         if success:
             st.success(f"Sent! Check your {channel_name} 📲")
         else:
-            # If sending was blocked by sandbox/credentials, inform user and present summary directly
             st.warning(f"Delivery notice: {info}")
-            st.info("Here is your generated nutrition summary ready for copy/paste:")
+            st.info("Here is your generated summary ready for copy/paste:")
             st.markdown(f'<div class="summary-card">{html.escape(summary)}</div>', unsafe_allow_html=True)
 
 # User status pill
@@ -541,50 +581,48 @@ dest = (
     else (st.session_state.email if channel_name == "Email" else st.session_state.telegram_id)
 )
 st.markdown(
-    f'<div class="user-pill"><span class="dot"></span> Logged in as <strong>{html.escape(st.session_state.name)}</strong> &nbsp;|&nbsp; Updates go to {channel_name}: {html.escape(dest)}</div>',
+    f'<div class="user-pill"><span class="dot"></span> <strong>{html.escape(st.session_state.name)}</strong> &nbsp;|&nbsp; {channel_name}: {html.escape(dest)} &nbsp;|&nbsp; Mode: {st.session_state.current_mode}</div>',
     unsafe_allow_html=True,
 )
 
 # Render Chat History
 if not st.session_state.messages:
-    add_message("assistant", "text", WELCOME_MESSAGE_TEMPLATE.format(name=st.session_state.name))
+    welcome_text = active_mode_info["welcome_template"].format(
+        name=st.session_state.name, channel=channel_name
+    )
+    add_message("assistant", "text", welcome_text)
 else:
     for message in st.session_state.messages:
         render_message(message)
 
-# Quick sample meal buttons (helpful for quick testing without typing or taking a photo)
-with st.expander("💡 Quick Sample Meals (Click to Test)", expanded=False):
-    s_col1, s_col2, s_col3 = st.columns(3)
+# Quick sample buttons tailored for current mode
+with st.expander("💡 Quick Test Presets (Click to Test)", expanded=False):
+    cols = st.columns(len(active_mode_info["samples"]))
     sample_text = None
-    with s_col1:
-        if st.button("🥗 Greek Salad with Chicken"):
-            sample_text = "I had a large Greek salad with grilled chicken breast, feta cheese, olives, cucumbers, and olive oil."
-    with s_col2:
-        if st.button("🍕 2 Slices of Pepperoni Pizza"):
-            sample_text = "I ate 2 regular slices of pepperoni pizza and a small glass of iced tea."
-    with s_col3:
-        if st.button("🍳 Avocado Toast & 2 Eggs"):
-            sample_text = "Breakfast was 2 scrambled eggs on sourdough toast with half an avocado and cherry tomatoes."
+    for idx, (label, prompt_val) in enumerate(active_mode_info["samples"]):
+        with cols[idx]:
+            if st.button(label, use_container_width=True, key=f"sample_{idx}"):
+                sample_text = prompt_val
 
     if sample_text:
         add_message("user", "text", sample_text)
-        with st.spinner("Crunching the numbers..."):
+        with st.spinner("Analyzing with Gemini..."):
             answer = ask_gemini([sample_text])
         add_message("assistant", "text", answer)
         st.rerun()
 
-# Optional Camera Input expander for mobile/webcam live snap
+# Optional Camera Input expander
 with st.expander("📷 Live Camera Snap (optional)", expanded=False):
-    camera_pic = st.camera_input("Take a photo of your meal")
+    camera_pic = st.camera_input("Take a photo")
     if camera_pic is not None:
-        if st.button("Analyze Captured Photo 🚀"):
+        if st.button("Analyze Captured Photo 🚀", key="analyze_camera_btn"):
             photo_bytes = camera_pic.getvalue()
             add_message("user", "image", photo_bytes)
             parts = [
                 types.Part.from_bytes(data=photo_bytes, mime_type=camera_pic.type or "image/jpeg"),
-                "What is this meal? Give me the estimated calories and macros (protein/carbs/fat).",
+                "Analyze this image according to your role and provide the full breakdown.",
             ]
-            with st.spinner("Crunching the numbers..."):
+            with st.spinner("Analyzing image..."):
                 answer = ask_gemini(parts)
             add_message("assistant", "text", answer)
             st.rerun()
@@ -593,7 +631,7 @@ with st.expander("📷 Live Camera Snap (optional)", expanded=False):
 # Step 3: Chat Input (Text + File Upload via accept_file=True)
 # ==============================================================================
 user_input = st.chat_input(
-    "Ask a question, or attach a photo of your meal",
+    f"Ask {active_mode_info['title']} a question, or attach a photo...",
     accept_file=True,
     file_type=["jpg", "jpeg", "png"],
 )
@@ -612,8 +650,8 @@ if user_input:
         add_message("user", "text", text)
         parts.append(text)
     elif photo is not None:
-        parts.append("What is this meal? Give me the calories and macros.")
+        parts.append("Analyze this image according to your role and provide the full breakdown.")
 
-    with st.spinner("Crunching the numbers..."):
+    with st.spinner("Crunching the details..."):
         answer = ask_gemini(parts)
     add_message("assistant", "text", answer)
