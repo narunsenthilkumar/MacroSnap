@@ -271,22 +271,88 @@ def send_email(to_address: str, user_name: str, summary: str, mode_name: str) ->
         return False, str(err)
 
 
+def resolve_telegram_chat_id(bot_token: str, raw_input: str = "") -> Optional[int]:
+    """Tries to resolve a Telegram username or fetch the latest sender ID via getUpdates."""
+    try:
+        url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
+        resp = requests.get(url, timeout=6)
+        data = resp.json()
+        if not data.get("ok"):
+            return None
+        clean_target = raw_input.strip().lstrip("@").lower() if raw_input else ""
+        # 1. Look for matching username if provided
+        for item in reversed(data.get("result", [])):
+            msg = item.get("message") or item.get("channel_post") or item.get("my_chat_member")
+            if not msg:
+                continue
+            sender = msg.get("from") or msg.get("chat")
+            if not sender:
+                continue
+            username = (sender.get("username") or "").lower()
+            if clean_target and clean_target == username:
+                return sender.get("id")
+
+        # 2. Otherwise return the most recent user who messaged the bot
+        for item in reversed(data.get("result", [])):
+            msg = item.get("message") or item.get("my_chat_member")
+            if msg:
+                sender = msg.get("from") or msg.get("chat")
+                if sender and sender.get("id") and not sender.get("is_bot", False):
+                    return sender.get("id")
+    except Exception:
+        pass
+    return None
+
+
 def send_telegram(chat_id: str, user_name: str, summary: str, mode_name: str) -> Tuple[bool, str]:
     """Sends telegram summary via Telegram Bot API (Option C)."""
     bot_token = TELEGRAM_BOT_TOKEN or st.session_state.get("override_telegram_token", "")
     if not bot_token:
-        return False, "Telegram Bot Token not configured. Please add TELEGRAM_BOT_TOKEN."
+        return False, "Telegram Bot Token not configured in secrets.toml."
+
+    clean_id = str(chat_id).strip()
+
+    # If user provided a username or non-numeric ID, try to resolve it from getUpdates
+    if not clean_id.lstrip("-").isdigit():
+        resolved = resolve_telegram_chat_id(bot_token, clean_id)
+        if resolved:
+            clean_id = str(resolved)
+            st.session_state["telegram_id"] = clean_id
+        else:
+            return False, (
+                "Telegram requires your numeric Chat ID (e.g. 123456789), not a username. "
+                "👉 1) Open your bot on Telegram and tap 'Start' or send 'hi'. "
+                "👉 2) Find your numeric ID using @userinfobot on Telegram."
+            )
 
     try:
         text = f"📑 *MacroSnap {mode_name} Digest for {user_name}*\n\n{summary}"
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        resp = requests.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
+        resp = requests.post(url, json={"chat_id": clean_id, "text": text}, timeout=10)
         data = resp.json()
         if data.get("ok"):
             return True, "Telegram message sent successfully!"
-        return False, data.get("description", "Unknown Telegram error")
+
+        desc = data.get("description", "Unknown Telegram error")
+        # Handle chat not found by attempting auto-resolution
+        if "chat not found" in desc.lower() or "bot can't" in desc.lower():
+            resolved = resolve_telegram_chat_id(bot_token, clean_id)
+            if resolved and str(resolved) != clean_id:
+                clean_id = str(resolved)
+                st.session_state["telegram_id"] = clean_id
+                retry_resp = requests.post(url, json={"chat_id": clean_id, "text": text}, timeout=10)
+                if retry_resp.json().get("ok"):
+                    return True, "Telegram message sent successfully!"
+
+            return False, (
+                f"{desc}. "
+                "Note: A bot cannot message you first. Please open your bot on Telegram, "
+                "press 'Start' (or send 'hi'), and enter your numeric Chat ID (from @userinfobot)."
+            )
+        return False, desc
     except Exception as err:
         return False, str(err)
+
 
 
 # --- Sidebar / Mode Selector & Settings ---
@@ -487,9 +553,14 @@ if "onboarded" not in st.session_state:
             )
         elif action_channel == "Telegram":
             telegram_id = st.text_input(
-                "Your Telegram Chat ID",
-                placeholder="123456789",
-                help="Send a message to your Telegram bot once, then input your Chat ID here.",
+                "Your Telegram Numeric Chat ID",
+                placeholder="e.g. 583726194 (Numbers only, not username)",
+                help="Enter your numeric User ID from @userinfobot. Do NOT enter @username.",
+            )
+            st.info(
+                "💡 **How to get your Telegram Chat ID in 2 steps:**\n"
+                "1. In Telegram, search for **`@userinfobot`** and tap Start — it will show your numeric **`Id: 123456789`**.\n"
+                "2. Open your bot (e.g. search for its username) and tap **Start** (or send 'hi') so the bot has permission to message you."
             )
 
         submitted = st.form_submit_button("Let's go 🚀", use_container_width=True)
