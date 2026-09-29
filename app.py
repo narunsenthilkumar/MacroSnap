@@ -271,8 +271,8 @@ def send_whatsapp(to_number: str, user_name: str, summary: str, twilio_client_in
 
 def send_email(to_address: str, user_name: str, summary: str, mode_name: str) -> Tuple[bool, str]:
     """Sends email summary via Gmail SMTP SSL (Option B)."""
-    gmail_user = GMAIL_ADDRESS or st.session_state.get("override_gmail_address", "")
-    gmail_pass = GMAIL_APP_PASSWORD or st.session_state.get("override_gmail_password", "")
+    gmail_user = (GMAIL_ADDRESS or st.session_state.get("override_gmail_address", "")).strip()
+    gmail_pass = (GMAIL_APP_PASSWORD or st.session_state.get("override_gmail_password", "")).replace(" ", "").strip()
 
     if not gmail_user or not gmail_pass:
         return False, "Gmail credentials not configured. Please add GMAIL_ADDRESS and GMAIL_APP_PASSWORD."
@@ -289,14 +289,32 @@ def send_email(to_address: str, user_name: str, summary: str, mode_name: str) ->
         msg = MIMEText(body)
         msg["Subject"] = f"📑 MacroSnap {mode_name} Digest for {user_name}"
         msg["From"] = gmail_user
-        msg["To"] = to_address
+        msg["To"] = to_address.strip()
 
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(gmail_user, gmail_pass)
-            server.send_message(msg)
-        return True, "Email sent successfully via Gmail SMTP!"
+        # Try Port 465 (SSL) first, with fallback to Port 587 (STARTTLS)
+        try:
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=12) as server:
+                server.login(gmail_user, gmail_pass)
+                server.send_message(msg)
+            return True, "Email sent successfully via Gmail SMTP!"
+        except (smtplib.SMTPServerDisconnected, OSError):
+            with smtplib.SMTP("smtp.gmail.com", 587, timeout=12) as server:
+                server.ehlo()
+                server.starttls()
+                server.ehlo()
+                server.login(gmail_user, gmail_pass)
+                server.send_message(msg)
+            return True, "Email sent successfully via Gmail SMTP!"
+
+    except smtplib.SMTPAuthenticationError:
+        return False, (
+            "Gmail login failed (Bad Credentials): The 16-character App Password does not match "
+            f"'{gmail_user}'. Please verify that GMAIL_ADDRESS is the exact Google account you used "
+            "when generating this App Password at myaccount.google.com/apppasswords."
+        )
     except Exception as err:
         return False, str(err)
+
 
 
 def resolve_telegram_chat_id(bot_token: str, raw_input: str = "") -> Optional[int]:
