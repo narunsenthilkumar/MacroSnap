@@ -167,8 +167,9 @@ def get_secret(key: str, default: str = "") -> str:
 
 
 # --- Configuration ---
-MODEL_NAME = get_secret("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL_NAME = get_secret("GEMINI_MODEL", "gemini-3.5-flash")
 GEMINI_API_KEY = get_secret("GEMINI_API_KEY")
+
 
 # Action Tool Credentials
 TWILIO_ACCOUNT_SID = get_secret("TWILIO_ACCOUNT_SID")
@@ -455,8 +456,9 @@ with st.sidebar:
 
     model_choice = st.selectbox(
         "Gemini Model",
-        options=["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"],
+        options=["gemini-3.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest", "gemini-2.5-flash"],
         index=0,
+        help="gemini-3.5-flash is the primary model with full free quota.",
     )
 
     # Status Indicators
@@ -528,26 +530,27 @@ def ensure_chat_session():
     if "chat" not in st.session_state or st.session_state.chat is None:
         if not gemini_client:
             return None
-        active_model = model_choice or MODEL_NAME
-        try:
-            st.session_state.chat = gemini_client.chats.create(
-                model=active_model,
-                config=types.GenerateContentConfig(system_instruction=active_mode_info["system_prompt"]),
-            )
-        except Exception:
+        selected = model_choice or MODEL_NAME or "gemini-3.5-flash"
+        candidates = [selected] + [m for m in ["gemini-3.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest"] if m != selected]
+        last_err = None
+        for m in candidates:
             try:
                 st.session_state.chat = gemini_client.chats.create(
-                    model="gemini-2.0-flash",
+                    model=m,
                     config=types.GenerateContentConfig(system_instruction=active_mode_info["system_prompt"]),
                 )
+                st.session_state["active_model_used"] = m
+                return st.session_state.chat
             except Exception as e:
-                st.error(f"Failed to create chat session: {e}")
-                return None
+                last_err = e
+                continue
+        st.error(f"Failed to create chat session: {last_err}")
+        return None
     return st.session_state.chat
 
 
 def ask_gemini(parts) -> str:
-    """Sends parts to Gemini chat session with graceful error handling."""
+    """Sends parts to Gemini chat session with automatic fallback on quota exhaustion or model unavailability."""
     chat = ensure_chat_session()
     if chat is None:
         return "Gemini chat session could not be established. Please check your Gemini API key in the sidebar."
@@ -555,16 +558,21 @@ def ask_gemini(parts) -> str:
         return chat.send_message(parts).text
     except Exception as error:
         err_msg = str(error)
-        if "404" in err_msg or "models/" in err_msg:
-            try:
-                fallback_chat = gemini_client.chats.create(
-                    model="gemini-2.0-flash",
-                    config=types.GenerateContentConfig(system_instruction=active_mode_info["system_prompt"]),
-                )
-                st.session_state.chat = fallback_chat
-                return fallback_chat.send_message(parts).text
-            except Exception as inner:
-                return f"Sorry, something went wrong: {inner}"
+        # If rate limit (429), unavailable (503), or not found (404), seamlessly fallback
+        if any(code in err_msg for code in ["429", "RESOURCE_EXHAUSTED", "404", "503", "UNAVAILABLE", "models/"]):
+            curr = st.session_state.get("active_model_used", "gemini-3.5-flash")
+            alts = [m for m in ["gemini-3.5-flash", "gemini-2.5-flash-lite", "gemini-flash-latest"] if m != curr]
+            for alt_m in alts:
+                try:
+                    fb_chat = gemini_client.chats.create(
+                        model=alt_m,
+                        config=types.GenerateContentConfig(system_instruction=active_mode_info["system_prompt"]),
+                    )
+                    st.session_state.chat = fb_chat
+                    st.session_state["active_model_used"] = alt_m
+                    return fb_chat.send_message(parts).text
+                except Exception:
+                    continue
         return f"Sorry, something went wrong: {error}"
 
 
@@ -672,6 +680,11 @@ with button_col:
     if st.button(button_label, disabled=send_disabled, use_container_width=True, type="primary"):
         with st.spinner("Generating clean summary with Gemini..."):
             summary = ask_gemini([active_mode_info["summary_prompt"]])
+
+        if summary.startswith("Sorry, something went wrong"):
+            st.error(f"⚠️ {summary}")
+            st.info("Tip: Try selecting 'gemini-3.5-flash' in the sidebar under Gemini Model.")
+            st.stop()
 
         st.session_state["last_summary"] = summary
         success = False
