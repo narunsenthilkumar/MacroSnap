@@ -202,12 +202,20 @@ def send_whatsapp(to_number: str, user_name: str, summary: str, twilio_client_in
     if not twilio_client_inst or not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
         return False, "Twilio credentials not configured in secrets.toml."
 
-    to_formatted = to_number.strip()
-    if not to_formatted.startswith("+"):
-        to_formatted = f"+{to_formatted}"
-    whatsapp_to = f"whatsapp:{to_formatted}"
+    # Clean and sanitize destination phone number into strict E.164 digits
+    digits_only = "".join(c for c in to_number if c.isdigit())
+    if not digits_only:
+        return False, "Invalid WhatsApp phone number. Please include your country code (e.g. +91XXXXXXXXXX)."
+    whatsapp_to = f"whatsapp:+{digits_only}"
 
-    if TWILIO_CONTENT_SID:
+    # Only use Content Template if it's a real Twilio Content SID (starts with HX)
+    is_valid_content_sid = bool(
+        TWILIO_CONTENT_SID
+        and TWILIO_CONTENT_SID.strip().startswith("HX")
+        and len(TWILIO_CONTENT_SID.strip()) == 34
+    )
+
+    if is_valid_content_sid:
         try:
             content_variables = json.dumps(
                 {"1": user_name, "2": clean_whatsapp_text(summary)}, ensure_ascii=False
@@ -215,30 +223,50 @@ def send_whatsapp(to_number: str, user_name: str, summary: str, twilio_client_in
             message = twilio_client_inst.messages.create(
                 from_=TWILIO_WHATSAPP_FROM,
                 to=whatsapp_to,
-                content_sid=TWILIO_CONTENT_SID,
+                content_sid=TWILIO_CONTENT_SID.strip(),
                 content_variables=content_variables,
             )
             return True, message.sid
         except Exception as content_err:
+            # If template delivery fails, fallback to direct text body
             try:
+                body_text = f"Hi {user_name}! Here is your MacroSnap summary:\n\n{clean_whatsapp_text(summary)}"
                 message = twilio_client_inst.messages.create(
                     from_=TWILIO_WHATSAPP_FROM,
                     to=whatsapp_to,
-                    body=f"Hi {user_name}! Here is your MacroSnap summary:\n\n{summary}",
+                    body=body_text,
                 )
                 return True, message.sid
-            except Exception:
-                return False, str(content_err)
+            except Exception as fb_err:
+                err_str = str(fb_err)
+                if "Channel" in err_str or "63007" in err_str:
+                    return False, (
+                        "Twilio Sandbox error: You must join the sandbox from your phone first. "
+                        "Open WhatsApp and send your sandbox join code (e.g. 'join <code>') to +14155238886. "
+                        "Find your code in Twilio Console > Messaging > Try it out > Send a WhatsApp message."
+                    )
+                return False, f"Twilio template & direct fallback error: {fb_err}"
 
+    # Direct messaging (used when Content Template is not configured or in sandbox)
     try:
+        body_text = f"Hi {user_name}! Here is your MacroSnap summary:\n\n{clean_whatsapp_text(summary)}"
         message = twilio_client_inst.messages.create(
             from_=TWILIO_WHATSAPP_FROM,
             to=whatsapp_to,
-            body=f"Hi {user_name}! Here is your MacroSnap summary:\n\n{summary}",
+            body=body_text,
         )
         return True, message.sid
     except Exception as direct_err:
+        err_str = str(direct_err)
+        if "Channel" in err_str or "63007" in err_str or "21608" in err_str:
+            return False, (
+                "Twilio Sandbox not activated for this number: "
+                "1. Go to Twilio Console > Messaging > Try it out > Send a WhatsApp message. "
+                "2. From your WhatsApp (+91...), send the join keyword (e.g. 'join <code>') to +14155238886. "
+                "3. Once you receive Twilio's confirmation on WhatsApp, tap Send again!"
+            )
         return False, str(direct_err)
+
 
 
 def send_email(to_address: str, user_name: str, summary: str, mode_name: str) -> Tuple[bool, str]:
