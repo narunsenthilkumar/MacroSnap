@@ -138,17 +138,32 @@ st.markdown(
 )
 
 
-# --- Helper: Safe Secret Retrieval with Environment Variable Fallback ---
+# --- Helper: Safe Secret Retrieval with Live Disk Reading ---
 def get_secret(key: str, default: str = "") -> str:
-    """Safely retrieves a configuration key from st.secrets or os.environ."""
+    """Safely retrieves a configuration key, checking local secrets.toml first, then st.secrets, then os.environ."""
+    # 1. Read directly from .streamlit/secrets.toml so edits take effect immediately without caching issues
+    secrets_path = os.path.join(os.path.dirname(__file__), ".streamlit", "secrets.toml")
+    if os.path.exists(secrets_path):
+        try:
+            import toml
+            data = toml.load(secrets_path)
+            if key in data and data[key] is not None:
+                return str(data[key]).strip()
+        except Exception:
+            pass
+
+    # 2. Check Streamlit secrets
     try:
         if key in st.secrets:
             val = st.secrets[key]
             return str(val).strip() if val is not None else default
     except Exception:
         pass
+
+    # 3. Check environment variables
     val = os.getenv(key)
     return str(val).strip() if val else default
+
 
 
 # --- Configuration ---
